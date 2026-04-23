@@ -38,6 +38,8 @@ Giống như AWS, GCP mặc định khóa quota GPU (hạn mức = 0) cho các P
 4. Nhấp **Edit Quotas** -> Điền số lượng mong muốn là **1** -> Gửi yêu cầu (Submit request).
 *Lưu ý: Quá trình GCP xét duyệt tăng Quota có thể mất từ vài phút đến 24 giờ. Hãy thực hiện bước này càng sớm càng tốt.*
 
+> **⚠️ Ghi chú quan trọng cho tài khoản mới / Free Tier:** Nếu yêu cầu tăng quota GPU bị từ chối hoặc chưa được duyệt trong thời gian làm lab, hãy chuyển sang **[Phần 7: Phương án Dự phòng — CPU Instance với LightGBM](#phần-7-phương-án-dự-phòng--cpu-instance-với-lightgbm-khi-không-xin-được-quota-gpu)**. Đây là phương án thay thế hợp lệ và sẽ được chấm điểm tương đương.
+
 ---
 
 ## Phần 2: Cài đặt và cấu hình môi trường Local
@@ -163,3 +165,143 @@ Mở Terminal và chạy lệnh:
 terraform destroy
 ```
 Gõ `yes` để xác nhận việc xóa. Sau khi xóa xong, bạn có thể đăng nhập lại GCP Console để kiểm tra lần cuối, đảm bảo không còn máy ảo (VM instances) nào đang ở trạng thái `Running`.
+
+---
+
+## Phần 7: Phương án Dự phòng — CPU Instance với LightGBM (Khi không xin được Quota GPU)
+
+> **Ghi chú (tiếng Việt):** Đây là phương án dành cho các bạn dùng tài khoản GCP mới hoặc Free Tier ($300 credit). GCP mặc định khóa quota GPU ở mức 0 cho mọi Project mới và quá trình xét duyệt tăng quota đôi khi bị từ chối do tài khoản chưa đủ lịch sử thanh toán. Thay vì bỏ qua bài lab, bạn sẽ chuyển sang triển khai một **bài toán Machine Learning thực tế** (LightGBM — gradient boosting) trên một **instance CPU cao cấp**. Quy trình này vẫn đầy đủ: Terraform IaC → Cloud VM → Training → Inference → Billing check, chỉ khác là không cần GPU.
+
+### 7.1: Thay đổi cấu hình Terraform sang CPU Instance
+
+GCP đã hỗ trợ biến `machine_type`, `gpu_type` và `gpu_count` trong `terraform-gcp/variables.tf`. Để chuyển sang CPU, bạn cần:
+
+**Bước 1 — Thiết lập biến môi trường để đổi machine type và tắt GPU:**
+
+```bash
+export TF_VAR_project_id="<PROJECT_ID_CỦA_BẠN>"
+export TF_VAR_machine_type="n2-standard-8"
+export TF_VAR_gpu_count=0
+export TF_VAR_hf_token="dummy"   # Không cần HF token khi chạy LGBM
+```
+
+**Bước 2 — Tắt GPU accelerator block trong `terraform-gcp/main.tf`:**
+
+Tìm và comment out block `guest_accelerator` (khoảng dòng 108–111) và `scheduling` block bắt buộc `on_host_maintenance = "TERMINATE"`. Thay bằng:
+
+```hcl
+# guest_accelerator {   # <-- Comment out toàn bộ block này
+#   type  = var.gpu_type
+#   count = var.gpu_count
+# }
+
+scheduling {
+  on_host_maintenance = "MIGRATE"   # MIGRATE thay vì TERMINATE
+  automatic_restart   = true
+}
+```
+
+> **Tại sao `n2-standard-8`?** Instance này có 8 vCPU và 32 GB RAM, không yêu cầu quota đặc biệt, có sẵn ngay trên tài khoản mới. Chi phí ~$0.382/giờ tại us-central1 — rẻ hơn GPU T4 (~$0.35/giờ chỉ GPU, chưa kể VM).
+
+### 7.2: Triển khai hạ tầng CPU
+
+```bash
+cd terraform-gcp
+terraform init
+terraform apply
+```
+
+Gõ `yes` khi được hỏi. Hạ tầng GCP (VPC, NAT, Load Balancer) tạo rất nhanh, thường **< 5 phút**.
+
+### 7.3: Kết nối vào CPU Instance qua IAP
+
+Sau khi `terraform apply` hoàn tất, kết nối vào VM thông qua IAP (không cần Bastion Host riêng):
+
+```bash
+# Lấy tên instance từ output hoặc gõ trực tiếp
+gcloud compute ssh ai-gpu-node --zone=us-central1-a --tunnel-through-iap --project=<PROJECT_ID_CỦA_BẠN>
+```
+
+### 7.4: Cài đặt môi trường ML
+
+Trên VM, chạy các lệnh sau:
+
+```bash
+# Cập nhật và cài Python packages
+sudo apt-get update -y
+sudo apt-get install -y python3 python3-pip python3-venv
+
+python3 -m pip install --upgrade pip
+pip3 install lightgbm scikit-learn pandas numpy kaggle
+
+# Tạo thư mục làm việc
+mkdir -p ~/ml-benchmark && cd ~/ml-benchmark
+```
+
+### 7.5: Tải Dataset từ Kaggle
+
+Chúng ta sẽ dùng **Credit Card Fraud Detection** — bộ dữ liệu chuẩn cho benchmark ML với 284,807 giao dịch thực.
+
+**Lấy Kaggle API Key:**
+1. Đăng nhập [kaggle.com](https://www.kaggle.com) -> **Settings** -> **API** -> **Create New Token** -> tải về `kaggle.json`.
+2. Copy nội dung vào VM:
+
+```bash
+mkdir -p ~/.kaggle
+# Tạo file credentials (thay YOUR_USERNAME và YOUR_KEY):
+cat > ~/.kaggle/kaggle.json << 'EOF'
+{"username": "YOUR_KAGGLE_USERNAME", "key": "YOUR_KAGGLE_API_KEY"}
+EOF
+chmod 600 ~/.kaggle/kaggle.json
+
+# Tải dataset
+kaggle datasets download -d mlg-ulb/creditcardfraud --unzip -p ~/ml-benchmark/
+```
+
+### 7.6: Kết quả Benchmark trên `n2-standard-8`
+
+| Metric | Kết quả |
+|---|---|
+| Thời gian load data | |
+| Thời gian training | |
+| Best iteration | |
+| AUC-ROC | |
+| Accuracy | |
+| F1-Score | |
+| Precision | |
+| Recall | |
+| Inference latency (1 row) | |
+| Inference throughput (1000 rows) | |
+
+### 7.7: Kiểm tra Chi phí sau 1 giờ
+
+Sau khi chạy benchmark xong, **đợi tổng cộng 1 giờ** kể từ lúc `terraform apply` hoàn tất rồi kiểm tra chi phí:
+
+1. Vào [GCP Billing Console](https://console.cloud.google.com/billing) -> **Reports**.
+2. Chọn khoảng thời gian hôm nay để xem chi phí hiện tại theo từng dịch vụ.
+3. Chụp màn hình thể hiện các dịch vụ đang phát sinh chi phí.
+
+**Ước tính chi phí 1 giờ (us-central1):**
+
+| Dịch vụ | Loại tài nguyên | Chi phí/giờ |
+|---|---|---|
+| Compute Engine — CPU Node | `n2-standard-8` | ~$0.382 |
+| Cloud NAT | (xử lý egress traffic) | ~$0.044 + data |
+| Cloud Load Balancing | External HTTP LB | ~$0.008 |
+| **Tổng ước tính** | | **~$0.43/giờ** |
+
+> **Ghi chú (tiếng Việt):** So sánh với GPU: Instance `n1-standard-4` + 1x NVIDIA T4 trên GCP có giá ~$0.35/giờ (GPU) + ~$0.19/giờ (VM) = ~$0.54/giờ. Phương án CPU `n2-standard-8` (~$0.43/giờ) thực ra **rẻ hơn** và có thể dùng ngay mà không cần chờ quota. Đây là bài học thực tế về việc lựa chọn infrastructure phù hợp với workload.
+
+### 7.8: Tiêu chí nộp bài (Phương án CPU thay thế)
+
+Nếu sử dụng phương án CPU + LightGBM, nộp các mục sau (được chấm tương đương phương án GPU):
+
+1. **Screenshot terminal** chạy `python3 benchmark.py` với toàn bộ output kết quả.
+2. **File `benchmark_result.json`** chứa metrics đầy đủ (training time, AUC, inference latency).
+3. **Screenshot GCP Billing Reports** sau 1 giờ triển khai, thể hiện Compute Engine và Cloud NAT.
+4. **Mã nguồn** thư mục `terraform-gcp/` đã chỉnh sửa (comment GPU block, `n2-standard-8`).
+5. **Báo cáo ngắn** (5–10 dòng): so sánh kết quả training time, AUC, inference speed; giải thích lý do phải dùng CPU thay GPU.
+
+---
+
+> **Lưu ý cuối (tiếng Việt):** Dù chạy GPU hay CPU, **bước dọn dẹp (Phần 6 — `terraform destroy`) là bắt buộc** ngay sau khi nộp bài. VM `n2-standard-8`, Cloud NAT và External IP vẫn tính phí liên tục theo giây dù không có tác vụ nào đang chạy. Đừng bỏ qua bước này!
