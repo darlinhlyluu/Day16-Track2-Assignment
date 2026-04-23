@@ -45,3 +45,15 @@ variable "gpu_count" {
   type        = number
   default     = 1
 }
+
+variable "gpu_image" {
+  description = "Boot image for the GPU VM"
+  type        = string
+  default     = "projects/deeplearning-platform-release/global/images/family/common-cu128-ubuntu-2204-nvidia-570"
+}
+
+variable "cpu_image" {
+  description = "Boot image for the CPU VM"
+  type        = string
+  default     = "projects/ubuntu-os-cloud/global/images/family/ubuntu-2204-lts"
+}

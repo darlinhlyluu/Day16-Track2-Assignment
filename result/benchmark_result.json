@@ -1,0 +1,17 @@
+{
+  "dataset": "creditcard.csv",
+  "rows": 284807,
+  "cols": 31,
+  "load_seconds": 2.324792566999804,
+  "train_seconds": 1.0946370359997672,
+  "best_iteration": 15,
+  "auc_roc": 0.977789200584567,
+  "accuracy": 0.9992977774656788,
+  "f1_score": 0.797979797979798,
+  "precision": 0.79,
+  "recall": 0.8061224489795918,
+  "inference_latency_seconds_1_row": 0.0007980148199999348,
+  "inference_throughput_rows_per_sec_batch": 960820.5869052552,
+  "batch_size": 1000,
+  "timestamp_utc": "2026-04-23T12:34:53Z"
+}
