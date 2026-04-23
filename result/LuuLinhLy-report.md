@@ -1,8 +1,7 @@
 # Báo cáo ngắn
-=========================
-Họ và tên: Lưu Linh Ly
-MSHV: 2A202600119
-=========================
+
+## Họ và tên: Lưu Linh Ly
+## MSHV: 2A202600119
 
 Lab này được triển khai trên GCP theo phương án CPU fallback với máy `n2-standard-8`.
 Mô hình LightGBM đã được huấn luyện thành công trên dataset `creditcard.csv` gồm `284,807` bản ghi với thời gian train `1.095 giây`, cho thấy workload ML này vẫn chạy rất nhanh trên CPU.
